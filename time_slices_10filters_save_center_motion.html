@@ -1,0 +1,1134 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Time Slices – 10 Filters</title>
+  <style>
+    :root{
+      --bg:#0d0f12;
+      --panel:#171a1f;
+      --text:#f3f4f6;
+      --muted:#a8adb7;
+      --line:#2a2f38;
+      --accent:#ffffff;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",
+                  "Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+    }
+    .wrap{
+      width:min(1120px,94vw);
+      margin:28px auto 48px;
+    }
+    h1{font-size:clamp(24px,4vw,42px); margin:0 0 8px; letter-spacing:.02em}
+    .lead{color:var(--muted); margin:0 0 18px; line-height:1.7}
+    .stage{
+      background:#000;
+      border:1px solid var(--line);
+      border-radius:14px;
+      overflow:hidden;
+      position:relative;
+      aspect-ratio:16/9;
+      display:grid;
+      place-items:center;
+    }
+    video#liveVideo{
+      width:100%;
+      height:100%;
+      object-fit:contain;
+      background:#000;
+    }
+    canvas#outputCanvas{
+      display:none;
+      width:100%;
+      height:100%;
+      object-fit:contain;
+      background:#000;
+      cursor:crosshair;
+      touch-action:none;
+    }
+    .overlay{
+      position:absolute;
+      left:16px;
+      top:14px;
+      z-index:3;
+      background:rgba(0,0,0,.58);
+      backdrop-filter:blur(5px);
+      padding:8px 11px;
+      border-radius:9px;
+      font-variant-numeric:tabular-nums;
+      font-weight:700;
+      pointer-events:none;
+    }
+    .controls{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      margin-top:14px;
+      align-items:center;
+    }
+    button, select{
+      appearance:none;
+      border:1px solid var(--line);
+      border-radius:10px;
+      background:var(--panel);
+      color:var(--text);
+      padding:12px 16px;
+      font:inherit;
+    }
+    button{
+      font-weight:700;
+      cursor:pointer;
+    }
+    button:hover:not(:disabled){filter:brightness(1.15)}
+    button:disabled{opacity:.38; cursor:not-allowed}
+    #recordBtn.recording{
+      background:#3a1719;
+      border-color:#7b2b30;
+      color:#ffd7d9;
+    }
+    .controlGroup{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .controlLabel{
+      color:var(--muted);
+      font-size:14px;
+      padding-left:4px;
+    }
+    .info{
+      display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:10px;
+      margin-top:14px;
+    }
+    .card{
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:10px;
+      padding:12px 14px;
+      line-height:1.5;
+    }
+    .card b{display:block; font-size:13px; color:var(--muted); margin-bottom:4px}
+    .status{
+      margin-top:14px;
+      color:var(--muted);
+      min-height:1.6em;
+      line-height:1.7;
+    }
+    .hiddenVideos{display:none}
+    code{
+      background:#0b0d10;
+      border:1px solid var(--line);
+      border-radius:6px;
+      padding:1px 6px;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      font-size:.95em;
+    }
+    @media (max-width:820px){
+      .info{grid-template-columns:repeat(2,minmax(0,1fr))}
+    }
+    @media (max-width:560px){
+      .info{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Time Slices / 10 Filters</h1>
+  <p class="lead">
+    同じ場所の60秒を、6つの時間帯（0 / 10 / 20 / 30 / 40 / 50秒）に分け、
+    10種類のフィルターでひとつのフレームへ合成します。
+    境界線は消し、時間の境目だけがひそかに潜む仕様です。
+  </p>
+
+  <div class="stage">
+    <video id="liveVideo" autoplay muted playsinline></video>
+    <canvas id="outputCanvas"></canvas>
+    <div class="overlay" id="overlay">カメラ未接続</div>
+  </div>
+
+  <div class="controls">
+    <div class="controlGroup">
+      <button id="cameraBtn">1. カメラ開始</button>
+      <button id="recordBtn" disabled>2. 60秒録画</button>
+      <button id="runBtn" disabled>3. 10秒実験動画をRUN</button>
+      <button id="saveBtn" disabled>4. 完成動画を保存</button>
+      <button id="stopBtn" disabled>停止</button>
+    </div>
+    <div class="controlGroup">
+      <span class="controlLabel">フィルター</span>
+      <select id="maskSelect">
+        <option value="rings">同心円</option>
+        <option value="vertical">縦ストライプ</option>
+        <option value="horizontal">横ストライプ</option>
+        <option value="diag1">斜めストライプ ／</option>
+        <option value="diag2">斜めストライプ ＼</option>
+        <option value="checker">2×3ブロック</option>
+        <option value="zigzag">ジグザグ帯</option>
+        <option value="waves">波打つ帯</option>
+        <option value="petals">花びら</option>
+        <option value="spiral">うずまき</option>
+      </select>
+      <span class="controlLabel">中心の動き</span>
+      <select id="motionSelect">
+        <option value="static">静止</option>
+        <option value="circle">円運動</option>
+        <option value="horizontal">左右スイング</option>
+        <option value="vertical">上下スイング</option>
+        <option value="figure8">8の字</option>
+        <option value="diagonal">斜めドリフト</option>
+      </select>
+      <button id="centerBtn" type="button">中心を中央へ戻す</button>
+    </div>
+  </div>
+
+  <div class="info">
+    <div class="card"><b>録画</b><span id="recordInfo">未録画</span></div>
+    <div class="card"><b>時間配置</b><span>0 / 10 / 20 / 30 / 40 / 50秒</span></div>
+    <div class="card"><b>現在のフィルター</b><span id="filterInfo">同心円</span></div>
+    <div class="card"><b>中心の動き</b><span id="motionInfo">静止</span></div>
+    <div class="card"><b>完成映像</b><span>10秒・境界線なし・WebM保存</span></div>
+  </div>
+
+  <div class="status" id="status">
+    「カメラ開始」を押してください。録画後は映像上をクリック／ドラッグしてフィルター中心を動かせます。<br>
+    さらに「中心の動き」で、10秒再生中に中心を動かすこともできます。<br>
+    カメラ権限のため、<code>http://localhost:8000/</code> のようにローカルサーバー経由で開くのがおすすめです。
+  </div>
+
+  <div class="hiddenVideos" id="hiddenVideos"></div>
+</div>
+
+<script>
+(() => {
+  const RECORD_SECONDS = 60;
+  const OUTPUT_SECONDS = 10;
+  const SECTORS = 6;
+  const OFFSET_SECONDS = 10;
+
+  const cameraBtn = document.getElementById('cameraBtn');
+  const recordBtn = document.getElementById('recordBtn');
+  const runBtn = document.getElementById('runBtn');
+  const saveBtn = document.getElementById('saveBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const centerBtn = document.getElementById('centerBtn');
+  const maskSelect = document.getElementById('maskSelect');
+  const motionSelect = document.getElementById('motionSelect');
+
+  const liveVideo = document.getElementById('liveVideo');
+  const canvas = document.getElementById('outputCanvas');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+  const status = document.getElementById('status');
+  const recordInfo = document.getElementById('recordInfo');
+  const filterInfo = document.getElementById('filterInfo');
+  const motionInfo = document.getElementById('motionInfo');
+  const hiddenVideos = document.getElementById('hiddenVideos');
+
+  let stream = null;
+  let recorder = null;
+  let chunks = [];
+  let recordedBlob = null;
+  let recordedURL = null;
+  let sourceVideos = [];
+  let recordingTimer = null;
+  let recordingStart = 0;
+  let animationId = null;
+  let outputStart = 0;
+  let isRunning = false;
+
+  // フィルター中心（Canvas座標）
+  let centerX = null;
+  let centerY = null;
+  let anchorCenterX = null;
+  let anchorCenterY = null;
+  let draggingCenter = false;
+
+  // 合成結果録画
+  let outputRecorder = null;
+  let outputChunks = [];
+  let outputBlob = null;
+  let outputURL = null;
+
+  const FILTER_LABELS = {
+    rings: '同心円',
+    vertical: '縦ストライプ',
+    horizontal: '横ストライプ',
+    diag1: '斜めストライプ ／',
+    diag2: '斜めストライプ ＼',
+    checker: '2×3ブロック',
+    zigzag: 'ジグザグ帯',
+    waves: '波打つ帯',
+    petals: '花びら',
+    spiral: 'うずまき'
+  };
+
+  const MOTION_LABELS = {
+    static: '静止',
+    circle: '円運動',
+    horizontal: '左右スイング',
+    vertical: '上下スイング',
+    figure8: '8の字',
+    diagonal: '斜めドリフト'
+  };
+
+  function setStatus(html) {
+    status.innerHTML = html;
+  }
+
+  function setOverlay(text) {
+    overlay.textContent = text;
+  }
+
+  function currentMask() {
+    return maskSelect.value;
+  }
+
+  function currentMotion() {
+    return motionSelect.value;
+  }
+
+  function updateFilterInfo() {
+    filterInfo.textContent = FILTER_LABELS[currentMask()];
+  }
+
+  function updateMotionInfo() {
+    motionInfo.textContent = MOTION_LABELS[currentMotion()];
+  }
+
+  function resetCenter() {
+    const W = canvas.width || 1280;
+    const H = canvas.height || 720;
+    centerX = W / 2;
+    centerY = H / 2;
+    anchorCenterX = centerX;
+    anchorCenterY = centerY;
+    if (recordedBlob && !isRunning) {
+      restoreAnchorCenter();
+      drawComposite(0);
+      setOverlay(`PREVIEW: ${FILTER_LABELS[currentMask()]}`);
+    }
+  }
+
+  function ensureCenter() {
+    const W = canvas.width || 1280;
+    const H = canvas.height || 720;
+    if (centerX == null || centerY == null) {
+      centerX = W / 2;
+      centerY = H / 2;
+    }
+    if (anchorCenterX == null || anchorCenterY == null) {
+      anchorCenterX = centerX;
+      anchorCenterY = centerY;
+    }
+  }
+
+  function canvasPointFromEvent(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+    return {
+      x: (clientX - rect.left) * canvas.width / rect.width,
+      y: (clientY - rect.top) * canvas.height / rect.height
+    };
+  }
+
+  function moveCenterFromEvent(e) {
+    if (!recordedBlob || canvas.style.display === 'none') return;
+    const p = canvasPointFromEvent(e);
+    centerX = Math.max(0, Math.min(canvas.width, p.x));
+    centerY = Math.max(0, Math.min(canvas.height, p.y));
+    anchorCenterX = centerX;
+    anchorCenterY = centerY;
+    if (!isRunning) {
+      restoreAnchorCenter();
+      drawComposite(0);
+      setOverlay(`CENTER ${Math.round(centerX)}, ${Math.round(centerY)}`);
+    }
+  }
+
+  function outputMimeType() {
+    const candidates = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
+    return candidates.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  }
+
+  function beginOutputRecording() {
+    outputChunks = [];
+    outputBlob = null;
+    saveBtn.disabled = true;
+
+    const canvasStream = canvas.captureStream(30);
+    const mimeType = outputMimeType();
+
+    outputRecorder = mimeType
+      ? new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: 8000000 })
+      : new MediaRecorder(canvasStream);
+
+    outputRecorder.ondataavailable = e => {
+      if (e.data && e.data.size > 0) outputChunks.push(e.data);
+    };
+
+    outputRecorder.onstop = () => {
+      outputBlob = new Blob(outputChunks, {
+        type: outputRecorder.mimeType || 'video/webm'
+      });
+
+      if (outputURL) URL.revokeObjectURL(outputURL);
+      outputURL = URL.createObjectURL(outputBlob);
+      saveBtn.disabled = false;
+      setStatus('10秒の実験動画が終了しました。<br><b>「完成動画を保存」</b>でWebMを書き出せます。フィルターや中心位置を変えて再RUNもできます。');
+    };
+
+    outputRecorder.start(250);
+  }
+
+  function finishOutputRecording() {
+    if (outputRecorder && outputRecorder.state === 'recording') {
+      outputRecorder.stop();
+    }
+  }
+
+  function saveOutput() {
+    if (!outputBlob || !outputURL) return;
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const mask = currentMask();
+    const motion = currentMotion();
+    a.href = outputURL;
+    a.download = `time-slices_${mask}_${motion}_${stamp}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function applyAnimatedCenter(elapsed, W, H) {
+    ensureCenter();
+
+    const mode = currentMotion();
+    const theta = (elapsed / OUTPUT_SECONDS) * Math.PI * 2;
+    const amp = Math.min(W, H) * 0.18;
+
+    let x = anchorCenterX;
+    let y = anchorCenterY;
+
+    switch (mode) {
+      case 'circle':
+        x = anchorCenterX + Math.cos(theta) * amp;
+        y = anchorCenterY + Math.sin(theta) * amp * 0.8;
+        break;
+      case 'horizontal':
+        x = anchorCenterX + Math.sin(theta) * amp;
+        y = anchorCenterY;
+        break;
+      case 'vertical':
+        x = anchorCenterX;
+        y = anchorCenterY + Math.sin(theta) * amp;
+        break;
+      case 'figure8':
+        x = anchorCenterX + Math.sin(theta) * amp;
+        y = anchorCenterY + Math.sin(theta * 2) * amp * 0.55;
+        break;
+      case 'diagonal':
+        x = anchorCenterX + Math.sin(theta) * amp * 0.85;
+        y = anchorCenterY + Math.sin(theta) * amp * 0.85;
+        break;
+      case 'static':
+      default:
+        x = anchorCenterX;
+        y = anchorCenterY;
+        break;
+    }
+
+    centerX = Math.max(0, Math.min(W, x));
+    centerY = Math.max(0, Math.min(H, y));
+  }
+
+  function restoreAnchorCenter() {
+    ensureCenter();
+    centerX = anchorCenterX;
+    centerY = anchorCenterY;
+  }
+
+  function preferredMimeType() {
+    const candidates = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
+    return candidates.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  }
+
+  async function startCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('このブラウザーではカメラAPIを利用できません。');
+    }
+
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+    }
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, max: 30 }
+      },
+      audio: false
+    });
+
+    liveVideo.srcObject = stream;
+    await liveVideo.play();
+
+    cameraBtn.textContent = 'カメラ再接続';
+    recordBtn.disabled = false;
+    liveVideo.style.display = 'block';
+    canvas.style.display = 'none';
+
+    setOverlay('LIVE');
+    setStatus('カメラ接続完了。構図を決めたら「60秒録画」を押してください。');
+  }
+
+  function startRecording() {
+    if (!stream) return;
+
+    stopExperiment();
+
+    chunks = [];
+    recordedBlob = null;
+    outputBlob = null;
+    saveBtn.disabled = true;
+    runBtn.disabled = true;
+    recordBtn.disabled = true;
+    cameraBtn.disabled = true;
+    maskSelect.disabled = true;
+    motionSelect.disabled = true;
+    centerBtn.disabled = true;
+    recordBtn.classList.add('recording');
+
+    const mimeType = preferredMimeType();
+    recorder = mimeType
+      ? new MediaRecorder(stream, { mimeType })
+      : new MediaRecorder(stream);
+
+    recorder.ondataavailable = e => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    recorder.onerror = e => {
+      console.error(e);
+      cleanupRecordingUI();
+      setStatus('録画中にエラーが発生しました。');
+    };
+
+    recorder.onstop = async () => {
+      clearInterval(recordingTimer);
+      recordingTimer = null;
+
+      recordedBlob = new Blob(chunks, {
+        type: recorder.mimeType || 'video/webm'
+      });
+
+      if (recordedURL) URL.revokeObjectURL(recordedURL);
+      recordedURL = URL.createObjectURL(recordedBlob);
+
+      try {
+        await prepareSourceVideos(recordedURL);
+        runBtn.disabled = false;
+        recordInfo.textContent = '録画完了';
+        setOverlay('READY');
+        setStatus('録画完了。「10秒実験動画をRUN」を押してください。<br>フィルターはいつでも切り替えられます。');
+      } catch (err) {
+        console.error(err);
+        setStatus('録画は完了しましたが、再生準備に失敗しました: ' + err.message);
+      } finally {
+        cleanupRecordingUI();
+      }
+    };
+
+    recorder.start(1000);
+    recordingStart = performance.now();
+    recordInfo.textContent = '録画中…';
+    setStatus('60秒録画しています。カメラはできるだけ固定してください。');
+
+    const update = () => {
+      const elapsed = (performance.now() - recordingStart) / 1000;
+      const remaining = Math.max(0, RECORD_SECONDS - elapsed);
+      setOverlay(`REC ●  ${remaining.toFixed(1)} s`);
+
+      if (elapsed >= RECORD_SECONDS && recorder?.state === 'recording') {
+        recorder.stop();
+      }
+    };
+
+    update();
+    recordingTimer = setInterval(update, 100);
+  }
+
+  function cleanupRecordingUI() {
+    recordBtn.classList.remove('recording');
+    recordBtn.disabled = false;
+    cameraBtn.disabled = false;
+    maskSelect.disabled = false;
+    motionSelect.disabled = false;
+    centerBtn.disabled = false;
+  }
+
+  async function prepareSourceVideos(url) {
+    sourceVideos.forEach(v => {
+      try { v.pause(); } catch {}
+      v.remove();
+    });
+    sourceVideos = [];
+    hiddenVideos.innerHTML = '';
+
+    for (let i = 0; i < SECTORS; i++) {
+      const v = document.createElement('video');
+      v.src = url;
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      hiddenVideos.appendChild(v);
+      sourceVideos.push(v);
+    }
+
+    await Promise.all(sourceVideos.map(waitForMetadata));
+
+    const w = sourceVideos[0].videoWidth || 1280;
+    const h = sourceVideos[0].videoHeight || 720;
+    canvas.width = w;
+    canvas.height = h;
+    resetCenter();
+  }
+
+  function waitForMetadata(video) {
+    return new Promise((resolve, reject) => {
+      if (video.readyState >= 1 && Number.isFinite(video.duration)) {
+        resolve();
+        return;
+      }
+      const onLoaded = () => { cleanup(); resolve(); };
+      const onError = () => { cleanup(); reject(new Error('録画映像を読み込めませんでした。')); };
+      const cleanup = () => {
+        video.removeEventListener('loadedmetadata', onLoaded);
+        video.removeEventListener('error', onError);
+      };
+      video.addEventListener('loadedmetadata', onLoaded, { once: true });
+      video.addEventListener('error', onError, { once: true });
+      video.load();
+    });
+  }
+
+  async function seekVideo(video, time) {
+    return new Promise(resolve => {
+      const maxTime = Math.max(0, (video.duration || RECORD_SECONDS) - 0.08);
+      const target = Math.min(Math.max(0, time), maxTime);
+      if (Math.abs(video.currentTime - target) < 0.08) {
+        resolve();
+        return;
+      }
+      const done = () => {
+        video.removeEventListener('seeked', done);
+        resolve();
+      };
+      video.addEventListener('seeked', done, { once: true });
+      video.currentTime = target;
+    });
+  }
+
+  async function runExperiment() {
+    if (!recordedBlob || sourceVideos.length !== SECTORS || isRunning) return;
+
+    isRunning = true;
+    runBtn.disabled = true;
+    recordBtn.disabled = true;
+    cameraBtn.disabled = true;
+    stopBtn.disabled = false;
+    maskSelect.disabled = true;
+    motionSelect.disabled = true;
+    centerBtn.disabled = true;
+    saveBtn.disabled = true;
+
+    liveVideo.style.display = 'none';
+    canvas.style.display = 'block';
+    ensureCenter();
+
+    setStatus(`実験動画を再生中：<b>${FILTER_LABELS[currentMask()]}</b> / 中心の動き：<b>${MOTION_LABELS[currentMotion()]}</b> / 0→50秒が同時に進みます。`);
+
+    beginOutputRecording();
+
+    await Promise.all(
+      sourceVideos.map((v, i) => seekVideo(v, i * OFFSET_SECONDS))
+    );
+    await Promise.all(sourceVideos.map(v => v.play().catch(() => {})));
+
+    outputStart = performance.now();
+
+    function frame(now) {
+      if (!isRunning) return;
+
+      const elapsed = (now - outputStart) / 1000;
+      applyAnimatedCenter(elapsed, canvas.width, canvas.height);
+      drawComposite(elapsed);
+
+      const remaining = Math.max(0, OUTPUT_SECONDS - elapsed);
+      setOverlay(`${FILTER_LABELS[currentMask()]} / ${MOTION_LABELS[currentMotion()]}  ${remaining.toFixed(1)} s`);
+
+      if (elapsed >= OUTPUT_SECONDS) {
+        finishExperiment();
+        return;
+      }
+      animationId = requestAnimationFrame(frame);
+    }
+
+    animationId = requestAnimationFrame(frame);
+  }
+
+  function drawComposite(elapsed) {
+    const W = canvas.width;
+    const H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    for (let i = 0; i < SECTORS; i++) {
+      ctx.save();
+      beginRegionPath(ctx, currentMask(), i, W, H);
+      ctx.clip();
+      drawVideoCover(ctx, sourceVideos[i], W, H);
+      ctx.restore();
+    }
+
+    drawLabels(elapsed, currentMask(), W, H);
+
+    // プレビュー時だけ中心マーカー
+    if (!isRunning && ['rings','petals','spiral'].includes(currentMask())) {
+      ensureCenter();
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, Math.max(5, W / 180), 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.88)';
+      ctx.lineWidth = Math.max(1.5, W / 900);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(centerX - 10, centerY);
+      ctx.lineTo(centerX + 10, centerY);
+      ctx.moveTo(centerX, centerY - 10);
+      ctx.lineTo(centerX, centerY + 10);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function drawVideoCover(ctx, video, W, H) {
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const scale = Math.max(W / vw, H / vh);
+    const dw = vw * scale;
+    const dh = vh * scale;
+    const dx = (W - dw) / 2;
+    const dy = (H - dh) / 2;
+    ctx.drawImage(video, dx, dy, dw, dh);
+  }
+
+  function beginRegionPath(ctx, mode, i, W, H) {
+    switch (mode) {
+      case 'rings': return pathRings(ctx, i, W, H);
+      case 'vertical': return pathVertical(ctx, i, W, H);
+      case 'horizontal': return pathHorizontal(ctx, i, W, H);
+      case 'diag1': return pathRotatedBands(ctx, i, W, H, Math.PI / 4);
+      case 'diag2': return pathRotatedBands(ctx, i, W, H, -Math.PI / 4);
+      case 'checker': return pathChecker(ctx, i, W, H);
+      case 'zigzag': return pathZigzag(ctx, i, W, H);
+      case 'waves': return pathWaves(ctx, i, W, H);
+      case 'petals': return pathPetals(ctx, i, W, H);
+      case 'spiral': return pathSpiral(ctx, i, W, H);
+      default: return pathVertical(ctx, i, W, H);
+    }
+  }
+
+  function pathVertical(ctx, i, W, H) {
+    const bw = W / SECTORS;
+    const overlap = 2;
+    ctx.beginPath();
+    ctx.rect(i * bw - overlap, 0, bw + overlap * 2, H);
+  }
+
+  function pathHorizontal(ctx, i, W, H) {
+    const bh = H / SECTORS;
+    const overlap = 2;
+    ctx.beginPath();
+    ctx.rect(0, i * bh - overlap, W, bh + overlap * 2);
+  }
+
+  function pathChecker(ctx, i, W, H) {
+    const cols = 3, rows = 2;
+    const cw = W / cols;
+    const ch = H / rows;
+    const row = Math.floor(i / cols);
+    const col = i % cols;
+    const overlap = 2;
+    ctx.beginPath();
+    ctx.rect(col * cw - overlap, row * ch - overlap, cw + overlap * 2, ch + overlap * 2);
+  }
+
+  function pathRings(ctx, i, W, H) {
+    ensureCenter();
+    const cx = centerX;
+    const cy = centerY;
+    const maxR = Math.max(
+      Math.hypot(cx, cy),
+      Math.hypot(W - cx, cy),
+      Math.hypot(cx, H - cy),
+      Math.hypot(W - cx, H - cy)
+    ) + 4;
+    const r0 = (i / SECTORS) * maxR;
+    const r1 = ((i + 1) / SECTORS) * maxR;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r1, 0, Math.PI * 2);
+    if (r0 > 0) {
+      ctx.arc(cx, cy, r0, 0, Math.PI * 2, true);
+    }
+    ctx.closePath();
+  }
+
+  function pathRotatedBands(ctx, i, W, H, angle) {
+    const diag = Math.hypot(W, H) * 1.7;
+    const bw = diag / SECTORS;
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.rect(-diag / 2 + i * bw - 2, -diag / 2, bw + 4, diag);
+    ctx.restore();
+  }
+
+  function pathWaves(ctx, i, W, H) {
+    const bw = W / SECTORS;
+    const amp = bw * 0.18;
+    const phase = i * 0.7;
+    const overlap = 2;
+    ctx.beginPath();
+
+    const leftX = y => i * bw + Math.sin((y / H) * Math.PI * 2 + phase) * amp;
+    const rightX = y => (i + 1) * bw + Math.sin((y / H) * Math.PI * 2 + phase) * amp;
+
+    ctx.moveTo(leftX(0) - overlap, 0);
+    for (let y = 0; y <= H; y += 8) ctx.lineTo(leftX(y) - overlap, y);
+    for (let y = H; y >= 0; y -= 8) ctx.lineTo(rightX(y) + overlap, y);
+    ctx.closePath();
+  }
+
+  function pathZigzag(ctx, i, W, H) {
+    const bw = W / SECTORS;
+    const amp = bw * 0.16;
+    const period = 60;
+    const overlap = 2;
+
+    const zig = y => {
+      const t = (y % period) / period;
+      return t < 0.5 ? (t * 2) : (2 - t * 2); // 0→1→0
+    };
+
+    const leftX = y => i * bw + (zig(y) - 0.5) * 2 * amp;
+    const rightX = y => (i + 1) * bw + (zig(y + period / 2) - 0.5) * 2 * amp;
+
+    ctx.beginPath();
+    ctx.moveTo(leftX(0) - overlap, 0);
+    for (let y = 0; y <= H; y += 8) ctx.lineTo(leftX(y) - overlap, y);
+    for (let y = H; y >= 0; y -= 8) ctx.lineTo(rightX(y) + overlap, y);
+    ctx.closePath();
+  }
+
+  function pathPetals(ctx, i, W, H) {
+    ensureCenter();
+    const cx = centerX;
+    const cy = centerY;
+    const maxR = Math.max(
+      Math.hypot(cx, cy),
+      Math.hypot(W - cx, cy),
+      Math.hypot(cx, H - cy),
+      Math.hypot(W - cx, H - cy)
+    ) + 12;
+    const step = (Math.PI * 2) / SECTORS;
+    const start = -Math.PI / 2 + i * step;
+    const end = start + step;
+    const bow = step * 0.20;
+
+    ctx.beginPath();
+
+    // 左境界（中心→外）
+    for (let r = 0; r <= maxR; r += maxR / 120) {
+      const t = r / maxR;
+      const a = start + Math.sin(t * Math.PI) * bow;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      if (r === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+
+    // 外周つなぎ
+    for (let k = 0; k <= 28; k++) {
+      const u = k / 28;
+      const a = start + (end - start) * u;
+      const r = maxR * (0.95 + 0.05 * Math.sin(u * Math.PI));
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    }
+
+    // 右境界（外→中心）
+    for (let r = maxR; r >= 0; r -= maxR / 120) {
+      const t = r / maxR;
+      const a = end - Math.sin(t * Math.PI) * bow;
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    }
+
+    ctx.closePath();
+  }
+
+  function pathSpiral(ctx, i, W, H) {
+    ensureCenter();
+    const cx = centerX;
+    const cy = centerY;
+    const maxR = Math.max(
+      Math.hypot(cx, cy),
+      Math.hypot(W - cx, cy),
+      Math.hypot(cx, H - cy),
+      Math.hypot(W - cx, H - cy)
+    ) + 16;
+    const step = (Math.PI * 2) / SECTORS;
+    const startBase = -Math.PI / 2;
+    const turns = 1.15;
+
+    ctx.beginPath();
+
+    for (let r = 0; r <= maxR; r += maxR / 150) {
+      const t = r / maxR;
+      const a = startBase + i * step + turns * Math.PI * 2 * t;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      if (r === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+
+    for (let r = maxR; r >= 0; r -= maxR / 150) {
+      const t = r / maxR;
+      const a = startBase + (i + 1) * step + turns * Math.PI * 2 * t;
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    }
+
+    ctx.closePath();
+  }
+
+  function getLabelPoint(mode, i, W, H) {
+    ensureCenter();
+    const cx = centerX;
+    const cy = centerY;
+    switch (mode) {
+      case 'vertical': {
+        const bw = W / SECTORS;
+        return { x: (i + 0.5) * bw, y: H * 0.12 };
+      }
+      case 'horizontal': {
+        const bh = H / SECTORS;
+        return { x: W * 0.12, y: (i + 0.5) * bh };
+      }
+      case 'checker': {
+        const cols = 3;
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+        return { x: (col + 0.5) * W / 3, y: (row + 0.5) * H / 2 };
+      }
+      case 'diag1':
+      case 'diag2': {
+        const startX = W * 0.16;
+        const endX = W * 0.84;
+        const startY = mode === 'diag1' ? H * 0.82 : H * 0.18;
+        const endY = mode === 'diag1' ? H * 0.18 : H * 0.82;
+        const t = (i + 0.5) / SECTORS;
+        return {
+          x: startX + (endX - startX) * t,
+          y: startY + (endY - startY) * t
+        };
+      }
+      case 'rings': {
+        const maxR = Math.min(W, H) * 0.44;
+        const r0 = (i + 0.5) / SECTORS * maxR;
+        return { x: cx, y: cy - r0 };
+      }
+      case 'waves':
+      case 'zigzag': {
+        const bw = W / SECTORS;
+        return { x: (i + 0.5) * bw, y: H * 0.12 + (i % 2) * 20 };
+      }
+      case 'petals':
+      case 'spiral': {
+        const step = Math.PI * 2 / SECTORS;
+        const a = -Math.PI / 2 + (i + 0.5) * step;
+        const r = Math.min(W, H) * 0.28;
+        return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+      }
+      default:
+        return { x: W / 2, y: H / 2 };
+    }
+  }
+
+  function drawLabels(elapsed, mode, W, H) {
+    ctx.save();
+    ctx.font = `${Math.max(13, Math.round(W / 72))}px system-ui`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.96)';
+    ctx.shadowColor = 'rgba(0,0,0,0.92)';
+    ctx.shadowBlur = 6;
+
+    for (let i = 0; i < SECTORS; i++) {
+      const p = getLabelPoint(mode, i, W, H);
+      const t = Math.min(i * OFFSET_SECONDS + elapsed, RECORD_SECONDS);
+      ctx.fillText(`${t.toFixed(1)}s`, p.x, p.y);
+    }
+    ctx.restore();
+  }
+
+  function finishExperiment() {
+    if (!isRunning) return;
+    isRunning = false;
+    if (animationId) cancelAnimationFrame(animationId);
+    animationId = null;
+    sourceVideos.forEach(v => v.pause());
+    finishOutputRecording();
+
+    restoreAnchorCenter();
+    setOverlay('FINISHED');
+    setStatus('10秒の実験動画が終了しました。<br><b>「完成動画を保存」</b>でWebMを書き出せます。フィルター・中心位置・中心の動きを変えて再RUNできます。');
+
+    runBtn.disabled = false;
+    recordBtn.disabled = false;
+    cameraBtn.disabled = false;
+    stopBtn.disabled = true;
+    maskSelect.disabled = false;
+    motionSelect.disabled = false;
+    centerBtn.disabled = false;
+  }
+
+  function stopExperiment() {
+    if (animationId) cancelAnimationFrame(animationId);
+    animationId = null;
+
+    if (isRunning) {
+      sourceVideos.forEach(v => v.pause());
+      isRunning = false;
+      finishOutputRecording();
+    }
+
+    stopBtn.disabled = true;
+    recordBtn.disabled = !stream;
+    cameraBtn.disabled = false;
+    maskSelect.disabled = false;
+
+    if (recordedBlob) {
+      runBtn.disabled = false;
+      setOverlay('READY');
+    }
+  }
+
+  cameraBtn.addEventListener('click', async () => {
+    try {
+      cameraBtn.disabled = true;
+      setStatus('カメラへ接続しています…');
+      await startCamera();
+    } catch (err) {
+      console.error(err);
+      setOverlay('ERROR');
+      setStatus(
+        'カメラを開始できませんでした。<code>localhost</code> または <code>HTTPS</code> で開き、ブラウザーのカメラ権限を許可してください。'
+      );
+    } finally {
+      cameraBtn.disabled = false;
+    }
+  });
+
+  recordBtn.addEventListener('click', startRecording);
+  runBtn.addEventListener('click', runExperiment);
+  saveBtn.addEventListener('click', saveOutput);
+  centerBtn.addEventListener('click', () => {
+    resetCenter();
+    setStatus('フィルター中心を画面中央へ戻しました。中心の動きが静止以外なら、この位置を基準に動きます。');
+  });
+
+  canvas.addEventListener('pointerdown', e => {
+    if (isRunning) return;
+    draggingCenter = true;
+    canvas.setPointerCapture?.(e.pointerId);
+    moveCenterFromEvent(e);
+  });
+
+  canvas.addEventListener('pointermove', e => {
+    if (!draggingCenter || isRunning) return;
+    moveCenterFromEvent(e);
+  });
+
+  canvas.addEventListener('pointerup', e => {
+    draggingCenter = false;
+    try { canvas.releasePointerCapture?.(e.pointerId); } catch {}
+  });
+
+  canvas.addEventListener('pointercancel', () => {
+    draggingCenter = false;
+  });
+
+  stopBtn.addEventListener('click', () => {
+    stopExperiment();
+    setStatus('再生を停止しました。');
+  });
+  maskSelect.addEventListener('change', () => {
+    updateFilterInfo();
+    if (recordedBlob && !isRunning) {
+      liveVideo.style.display = 'none';
+      canvas.style.display = 'block';
+      restoreAnchorCenter();
+      drawComposite(0);
+      setOverlay(`PREVIEW: ${FILTER_LABELS[currentMask()]}`);
+      if (['rings','petals','spiral'].includes(currentMask())) {
+        setStatus('映像上をクリック／ドラッグすると、このフィルターの中心位置を動かせます。中心の動きもあわせて設定できます。');
+      } else {
+        setStatus('フィルターを変更しました。RUNすると10秒の合成結果を新しく録画できます。');
+      }
+    }
+  });
+
+  motionSelect.addEventListener('change', () => {
+    updateMotionInfo();
+    if (recordedBlob && !isRunning) {
+      liveVideo.style.display = 'none';
+      canvas.style.display = 'block';
+      restoreAnchorCenter();
+      drawComposite(0);
+      setOverlay(`PREVIEW: ${FILTER_LABELS[currentMask()]} / ${MOTION_LABELS[currentMotion()]}`);
+      setStatus(`中心の動きを <b>${MOTION_LABELS[currentMotion()]}</b> に変更しました。RUNするとこの動きで10秒動画を生成します。`);
+    }
+  });
+
+  updateFilterInfo();
+  updateMotionInfo();
+
+  window.addEventListener('beforeunload', () => {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (recordedURL) URL.revokeObjectURL(recordedURL);
+    if (outputURL) URL.revokeObjectURL(outputURL);
+  });
+})();
+</script>
+</body>
+</html>

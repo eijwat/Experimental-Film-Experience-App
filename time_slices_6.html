@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Time Slices – 6分割実験映画</title>
+  <style>
+    :root{
+      --bg:#0d0f12;
+      --panel:#171a1f;
+      --text:#f3f4f6;
+      --muted:#a8adb7;
+      --line:#2a2f38;
+      --accent:#ffffff;
+      --danger:#ff5a5f;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",
+                  "Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+    }
+    .wrap{
+      width:min(1100px,94vw);
+      margin:28px auto 48px;
+    }
+    h1{font-size:clamp(24px,4vw,42px); margin:0 0 8px; letter-spacing:.02em}
+    .lead{color:var(--muted); margin:0 0 20px; line-height:1.7}
+    .stage{
+      background:#000;
+      border:1px solid var(--line);
+      border-radius:14px;
+      overflow:hidden;
+      position:relative;
+      aspect-ratio:16/9;
+      display:grid;
+      place-items:center;
+    }
+    video#liveVideo{
+      width:100%;
+      height:100%;
+      object-fit:contain;
+      background:#000;
+    }
+    canvas#outputCanvas{
+      display:none;
+      width:100%;
+      height:100%;
+      object-fit:contain;
+      background:#000;
+    }
+    .overlay{
+      position:absolute;
+      left:16px;
+      top:14px;
+      z-index:3;
+      background:rgba(0,0,0,.58);
+      backdrop-filter:blur(5px);
+      padding:8px 11px;
+      border-radius:9px;
+      font-variant-numeric:tabular-nums;
+      font-weight:700;
+      pointer-events:none;
+    }
+    .controls{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      margin-top:14px;
+    }
+    button{
+      appearance:none;
+      border:1px solid var(--line);
+      border-radius:10px;
+      background:var(--panel);
+      color:var(--text);
+      padding:12px 16px;
+      font:inherit;
+      font-weight:700;
+      cursor:pointer;
+    }
+    button:hover:not(:disabled){filter:brightness(1.15)}
+    button:disabled{opacity:.38; cursor:not-allowed}
+    #recordBtn.recording{
+      background:#3a1719;
+      border-color:#7b2b30;
+      color:#ffd7d9;
+    }
+    .info{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:10px;
+      margin-top:14px;
+    }
+    .card{
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:10px;
+      padding:12px 14px;
+    }
+    .card b{display:block; font-size:13px; color:var(--muted); margin-bottom:4px}
+    .status{
+      margin-top:14px;
+      color:var(--muted);
+      min-height:1.6em;
+      line-height:1.6;
+    }
+    .hiddenVideos{display:none}
+    @media (max-width:700px){
+      .info{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Time Slices / 6</h1>
+  <p class="lead">
+    同じ場所の60秒を、6つの扇形に10秒ずつ時間をずらして同時表示します。
+    時計回りに「過去 → 未来」が並びます。
+  </p>
+
+  <div class="stage">
+    <video id="liveVideo" autoplay muted playsinline></video>
+    <canvas id="outputCanvas"></canvas>
+    <div class="overlay" id="overlay">カメラ未接続</div>
+  </div>
+
+  <div class="controls">
+    <button id="cameraBtn">1. カメラ開始</button>
+    <button id="recordBtn" disabled>2. 60秒録画</button>
+    <button id="runBtn" disabled>3. 10秒実験動画をRUN</button>
+    <button id="stopBtn" disabled>停止</button>
+  </div>
+
+  <div class="info">
+    <div class="card"><b>録画</b><span id="recordInfo">未録画</span></div>
+    <div class="card"><b>時間配置</b><span>0 / 10 / 20 / 30 / 40 / 50秒</span></div>
+    <div class="card"><b>完成映像</b><span>10秒・6扇形</span></div>
+  </div>
+
+  <div class="status" id="status">
+    「カメラ開始」を押してください。
+  </div>
+
+  <div class="hiddenVideos" id="hiddenVideos"></div>
+</div>
+
+<script>
+(() => {
+  const RECORD_SECONDS = 60;
+  const OUTPUT_SECONDS = 10;
+  const SECTORS = 6;
+  const OFFSET_SECONDS = 10;
+
+  const cameraBtn = document.getElementById('cameraBtn');
+  const recordBtn = document.getElementById('recordBtn');
+  const runBtn = document.getElementById('runBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const liveVideo = document.getElementById('liveVideo');
+  const canvas = document.getElementById('outputCanvas');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+  const status = document.getElementById('status');
+  const recordInfo = document.getElementById('recordInfo');
+  const hiddenVideos = document.getElementById('hiddenVideos');
+
+  let stream = null;
+  let recorder = null;
+  let chunks = [];
+  let recordedBlob = null;
+  let recordedURL = null;
+  let sourceVideos = [];
+  let recordingTimer = null;
+  let recordingStart = 0;
+  let animationId = null;
+  let outputStart = 0;
+  let isRunning = false;
+
+  function setStatus(text) {
+    status.textContent = text;
+  }
+
+  function setOverlay(text) {
+    overlay.textContent = text;
+  }
+
+  function preferredMimeType() {
+    const candidates = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
+    return candidates.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  }
+
+  async function startCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('このブラウザーではカメラAPIを利用できません。');
+    }
+
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+    }
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, max: 30 }
+      },
+      audio: false
+    });
+
+    liveVideo.srcObject = stream;
+    await liveVideo.play();
+
+    cameraBtn.textContent = 'カメラ再接続';
+    recordBtn.disabled = false;
+    liveVideo.style.display = 'block';
+    canvas.style.display = 'none';
+
+    setOverlay('LIVE');
+    setStatus('カメラ接続完了。構図を決めたら「60秒録画」を押してください。');
+  }
+
+  function startRecording() {
+    if (!stream) return;
+
+    stopExperiment();
+
+    chunks = [];
+    recordedBlob = null;
+    runBtn.disabled = true;
+    recordBtn.disabled = true;
+    cameraBtn.disabled = true;
+    recordBtn.classList.add('recording');
+
+    const mimeType = preferredMimeType();
+    recorder = mimeType
+      ? new MediaRecorder(stream, { mimeType })
+      : new MediaRecorder(stream);
+
+    recorder.ondataavailable = e => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    recorder.onerror = e => {
+      console.error(e);
+      cleanupRecordingUI();
+      setStatus('録画中にエラーが発生しました。');
+    };
+
+    recorder.onstop = async () => {
+      clearInterval(recordingTimer);
+      recordingTimer = null;
+
+      recordedBlob = new Blob(chunks, {
+        type: recorder.mimeType || 'video/webm'
+      });
+
+      if (recordedURL) URL.revokeObjectURL(recordedURL);
+      recordedURL = URL.createObjectURL(recordedBlob);
+
+      try {
+        await prepareSourceVideos(recordedURL);
+        runBtn.disabled = false;
+        recordInfo.textContent = '録画完了';
+        setOverlay('READY');
+        setStatus('録画完了。「10秒実験動画をRUN」を押してください。');
+      } catch (err) {
+        console.error(err);
+        setStatus('録画は完了しましたが、再生準備に失敗しました: ' + err.message);
+      } finally {
+        cleanupRecordingUI();
+      }
+    };
+
+    recorder.start(1000);
+    recordingStart = performance.now();
+    recordInfo.textContent = '録画中…';
+    setStatus('60秒録画しています。カメラは動かさず、そのままお待ちください。');
+
+    const update = () => {
+      const elapsed = (performance.now() - recordingStart) / 1000;
+      const remaining = Math.max(0, RECORD_SECONDS - elapsed);
+      setOverlay(`REC ●  ${remaining.toFixed(1)} s`);
+
+      if (elapsed >= RECORD_SECONDS && recorder?.state === 'recording') {
+        recorder.stop();
+      }
+    };
+
+    update();
+    recordingTimer = setInterval(update, 100);
+  }
+
+  function cleanupRecordingUI() {
+    recordBtn.classList.remove('recording');
+    recordBtn.disabled = false;
+    cameraBtn.disabled = false;
+  }
+
+  async function prepareSourceVideos(url) {
+    sourceVideos.forEach(v => {
+      try { v.pause(); } catch {}
+      v.remove();
+    });
+    sourceVideos = [];
+    hiddenVideos.innerHTML = '';
+
+    for (let i = 0; i < SECTORS; i++) {
+      const v = document.createElement('video');
+      v.src = url;
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      hiddenVideos.appendChild(v);
+      sourceVideos.push(v);
+    }
+
+    await Promise.all(sourceVideos.map(waitForMetadata));
+
+    const duration = Math.min(...sourceVideos.map(v => v.duration || 0));
+    if (!Number.isFinite(duration) || duration < 55) {
+      console.warn('Recorded duration:', duration);
+    }
+
+    const w = sourceVideos[0].videoWidth || 1280;
+    const h = sourceVideos[0].videoHeight || 720;
+    canvas.width = w;
+    canvas.height = h;
+  }
+
+  function waitForMetadata(video) {
+    return new Promise((resolve, reject) => {
+      if (video.readyState >= 1 && Number.isFinite(video.duration)) {
+        resolve();
+        return;
+      }
+
+      const onLoaded = () => {
+        cleanup();
+        resolve();
+      };
+
+      const onError = () => {
+        cleanup();
+        reject(new Error('録画映像を読み込めませんでした。'));
+      };
+
+      const cleanup = () => {
+        video.removeEventListener('loadedmetadata', onLoaded);
+        video.removeEventListener('error', onError);
+      };
+
+      video.addEventListener('loadedmetadata', onLoaded, { once: true });
+      video.addEventListener('error', onError, { once: true });
+      video.load();
+    });
+  }
+
+  async function seekVideo(video, time) {
+    return new Promise(resolve => {
+      const maxTime = Math.max(0, (video.duration || RECORD_SECONDS) - 0.08);
+      const target = Math.min(Math.max(0, time), maxTime);
+
+      if (Math.abs(video.currentTime - target) < 0.08) {
+        resolve();
+        return;
+      }
+
+      const done = () => {
+        video.removeEventListener('seeked', done);
+        resolve();
+      };
+      video.addEventListener('seeked', done, { once: true });
+      video.currentTime = target;
+    });
+  }
+
+  async function runExperiment() {
+    if (!recordedBlob || sourceVideos.length !== SECTORS || isRunning) return;
+
+    isRunning = true;
+    runBtn.disabled = true;
+    recordBtn.disabled = true;
+    cameraBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    liveVideo.style.display = 'none';
+    canvas.style.display = 'block';
+
+    setStatus('実験動画を再生中：時計回りに10秒ずつ未来へ進みます。');
+
+    // 各videoを 0,10,20,30,40,50 秒へ移動
+    await Promise.all(
+      sourceVideos.map((v, i) => seekVideo(v, i * OFFSET_SECONDS))
+    );
+
+    // 同時再生
+    await Promise.all(sourceVideos.map(v => v.play().catch(() => {})));
+
+    outputStart = performance.now();
+
+    function frame(now) {
+      if (!isRunning) return;
+
+      const elapsed = (now - outputStart) / 1000;
+
+      drawComposite(elapsed);
+
+      const remaining = Math.max(0, OUTPUT_SECONDS - elapsed);
+      setOverlay(`TIME SLICES  ${remaining.toFixed(1)} s`);
+
+      if (elapsed >= OUTPUT_SECONDS) {
+        finishExperiment();
+        return;
+      }
+
+      animationId = requestAnimationFrame(frame);
+    }
+
+    animationId = requestAnimationFrame(frame);
+  }
+
+  function drawComposite(elapsed) {
+    const W = canvas.width;
+    const H = canvas.height;
+    const cx = W / 2;
+    const cy = H / 2;
+
+    // 画面全体を覆うだけの十分な半径
+    const radius = Math.hypot(W, H);
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    // 12時方向を開始点にして時計回り
+    const startBase = -Math.PI / 2;
+    const step = (Math.PI * 2) / SECTORS;
+
+    for (let i = 0; i < SECTORS; i++) {
+      const start = startBase + i * step;
+      const end = start + step;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, radius, start, end, false);
+      ctx.closePath();
+      ctx.clip();
+
+      drawVideoCover(ctx, sourceVideos[i], W, H);
+      ctx.restore();
+    }
+
+    // 境界線
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.72)';
+    ctx.lineWidth = Math.max(1, W / 900);
+
+    for (let i = 0; i < SECTORS; i++) {
+      const a = startBase + i * step;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * radius, cy + Math.sin(a) * radius);
+      ctx.stroke();
+    }
+
+    // 中央点
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(2, W / 500), 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fill();
+    ctx.restore();
+
+    // 各セクターの時刻表示（小さく）
+    ctx.save();
+    ctx.font = `${Math.max(13, Math.round(W / 70))}px system-ui`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 5;
+
+    for (let i = 0; i < SECTORS; i++) {
+      const a = startBase + (i + 0.5) * step;
+      const rr = Math.min(W, H) * 0.37;
+      const x = cx + Math.cos(a) * rr;
+      const y = cy + Math.sin(a) * rr;
+      const t = Math.min(i * OFFSET_SECONDS + elapsed, RECORD_SECONDS);
+      ctx.fillText(`${t.toFixed(1)}s`, x, y);
+    }
+    ctx.restore();
+  }
+
+  function drawVideoCover(ctx, video, W, H) {
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const scale = Math.max(W / vw, H / vh);
+    const dw = vw * scale;
+    const dh = vh * scale;
+    const dx = (W - dw) / 2;
+    const dy = (H - dh) / 2;
+
+    ctx.drawImage(video, dx, dy, dw, dh);
+  }
+
+  function finishExperiment() {
+    if (!isRunning) return;
+
+    isRunning = false;
+    if (animationId) cancelAnimationFrame(animationId);
+    animationId = null;
+
+    sourceVideos.forEach(v => v.pause());
+
+    setOverlay('FINISHED');
+    setStatus('10秒の実験動画が終了しました。もう一度RUNできます。');
+
+    runBtn.disabled = false;
+    recordBtn.disabled = false;
+    cameraBtn.disabled = false;
+    stopBtn.disabled = true;
+  }
+
+  function stopExperiment() {
+    if (animationId) cancelAnimationFrame(animationId);
+    animationId = null;
+
+    if (isRunning) {
+      sourceVideos.forEach(v => v.pause());
+      isRunning = false;
+    }
+
+    stopBtn.disabled = true;
+
+    if (recordedBlob) {
+      runBtn.disabled = false;
+      setOverlay('READY');
+    }
+  }
+
+  cameraBtn.addEventListener('click', async () => {
+    try {
+      cameraBtn.disabled = true;
+      setStatus('カメラへ接続しています…');
+      await startCamera();
+    } catch (err) {
+      console.error(err);
+      setOverlay('ERROR');
+      setStatus(
+        'カメラを開始できませんでした。localhost または HTTPS で開き、ブラウザーのカメラ権限を許可してください。'
+      );
+    } finally {
+      cameraBtn.disabled = false;
+    }
+  });
+
+  recordBtn.addEventListener('click', startRecording);
+  runBtn.addEventListener('click', runExperiment);
+  stopBtn.addEventListener('click', () => {
+    stopExperiment();
+    setStatus('再生を停止しました。');
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (recordedURL) URL.revokeObjectURL(recordedURL);
+  });
+})();
+</script>
+</body>
+</html>
